@@ -147,14 +147,41 @@ def check_marketplace(expected_skills: set[str]) -> list[str]:
         return [f"missing marketplace file: {MARKETPLACE_FILE}"]
 
     data = json.loads(MARKETPLACE_FILE.read_text(encoding="utf-8"))
+
+    # Validate owner is an object with a name field (not a bare string).
+    owner = data.get("owner")
+    if not isinstance(owner, dict) or not owner.get("name"):
+        errors.append("marketplace.json: 'owner' must be an object with a 'name' field")
+
     plugins = data.get("plugins")
-    if not isinstance(plugins, dict):
-        return ["marketplace.json: 'plugins' must be an object"]
+    if not isinstance(plugins, list):
+        return errors + ["marketplace.json: 'plugins' must be an array"]
 
-    if plugins.get("zephyr-skills") != "..":
-        errors.append("marketplace.json: 'zephyr-skills' must map to '..'")
+    # Build lookup: plugin name -> source
+    plugin_map: dict[str, str] = {}
+    for entry in plugins:
+        if not isinstance(entry, dict):
+            errors.append("marketplace.json: each plugin entry must be an object")
+            continue
+        name = entry.get("name")
+        source = entry.get("source")
+        if not name:
+            errors.append("marketplace.json: plugin entry missing 'name' field")
+            continue
+        if not source:
+            errors.append(f"marketplace.json: plugin '{name}' missing 'source' field")
+            continue
+        if isinstance(source, str) and source.startswith("../"):
+            errors.append(
+                f"marketplace.json: plugin '{name}' source '{source}' uses '../' — "
+                "paths resolve from marketplace root, use './' instead"
+            )
+        plugin_map[name] = source
 
-    plugin_skill_keys = {k for k in plugins.keys() if k != "zephyr-skills"}
+    if plugin_map.get("zephyr-skills") != "./":
+        errors.append("marketplace.json: 'zephyr-skills' source must be './'")
+
+    plugin_skill_keys = {k for k in plugin_map.keys() if k != "zephyr-skills"}
     missing = sorted(expected_skills - plugin_skill_keys)
     extra = sorted(plugin_skill_keys - expected_skills)
 
@@ -164,11 +191,11 @@ def check_marketplace(expected_skills: set[str]) -> list[str]:
         errors.append(f"marketplace.json has unknown plugin entries: {', '.join(extra)}")
 
     for skill in sorted(expected_skills):
-        expected_path = f"../skills/{skill}"
-        got = plugins.get(skill)
+        expected_path = f"./skills/{skill}"
+        got = plugin_map.get(skill)
         if got != expected_path:
             errors.append(
-                f"marketplace.json: plugin '{skill}' should map to '{expected_path}', got '{got}'"
+                f"marketplace.json: plugin '{skill}' source should be '{expected_path}', got '{got}'"
             )
 
     return errors
